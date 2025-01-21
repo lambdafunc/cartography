@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def sync(
         neo4j_session: neo4j.Session,
         account: Account,
-        digitalocean_update_tag: str,
+        digitalocean_update_tag: int,
         common_job_parameters: dict,
 ) -> None:
     sync_account(neo4j_session, account, digitalocean_update_tag, common_job_parameters)
@@ -23,7 +23,7 @@ def sync(
 def sync_account(
         neo4j_session: neo4j.Session,
         account: Account,
-        digitalocean_update_tag: str,
+        digitalocean_update_tag: int,
         common_job_parameters: dict,
 ) -> None:
     logger.info("Syncing Account")
@@ -45,15 +45,15 @@ def transform_account(account_res: Account) -> dict:
 
 
 @timeit
-def load_account(neo4j_session: neo4j.Session, account: dict, digitalocean_update_tag: str) -> None:
+def load_account(neo4j_session: neo4j.Session, account: dict, digitalocean_update_tag: int) -> None:
     query = """
-            MERGE (a:DOAccount{id:{AccountId}})
+            MERGE (a:DOAccount{id:$AccountId})
             ON CREATE SET a.firstseen = timestamp()
-            SET a.uuid = {Uuid},
-            a.droplet_limit = {DropletLimit},
-            a.floating_ip_limit = {FloatingIpLimit},
-            a.status = {Status},
-            a.lastupdated = {digitalocean_update_tag}
+            SET a.uuid = $Uuid,
+            a.droplet_limit = $DropletLimit,
+            a.floating_ip_limit = $FloatingIpLimit,
+            a.status = $Status,
+            a.lastupdated = $digitalocean_update_tag
             """
     neo4j_session.run(
         query,
