@@ -14,10 +14,13 @@ from cartography.intel.okta import origins
 from cartography.intel.okta import roles
 from cartography.intel.okta import users
 from cartography.intel.okta.sync_state import OktaSyncState
+from cartography.stats import get_stats_client
+from cartography.util import merge_module_sync_metadata
 from cartography.util import run_cleanup_job
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
+stat_handler = get_stats_client(__name__)
 
 
 @timeit
@@ -65,7 +68,7 @@ def start_okta_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
     applications.sync_okta_applications(neo4j_session, config.okta_org_id, config.update_tag, config.okta_api_key)
     factors.sync_users_factors(neo4j_session, config.okta_org_id, config.update_tag, config.okta_api_key, state)
     origins.sync_trusted_origins(neo4j_session, config.okta_org_id, config.update_tag, config.okta_api_key)
-    awssaml.sync_okta_aws_saml(neo4j_session, config.okta_saml_role_regex, config.update_tag)
+    awssaml.sync_okta_aws_saml(neo4j_session, config.okta_saml_role_regex, config.update_tag, config.okta_org_id)
 
     # need creds with permission
     # soft fail as some won't be able to get such high priv token
@@ -81,3 +84,12 @@ def start_okta_ingestion(neo4j_session: neo4j.Session, config: Config) -> None:
             logger.warning("Unable to sync admin roles - api token needs admin rights to pull admin roles data")
 
     _cleanup_okta_organizations(neo4j_session, common_job_parameters)
+
+    merge_module_sync_metadata(
+        neo4j_session,
+        group_type='OktaOrganization',
+        group_id=config.okta_org_id,
+        synced_type='OktaOrganization',
+        update_tag=config.update_tag,
+        stat_handler=stat_handler,
+    )

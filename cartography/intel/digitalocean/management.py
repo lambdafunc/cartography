@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def sync(
         neo4j_session: neo4j.Session,
         manager: Manager,
-        digitalocean_update_tag: str,
+        digitalocean_update_tag: int,
         common_job_parameters: dict,
 ) -> dict:
     projects_resources = sync_projects(neo4j_session, manager, digitalocean_update_tag, common_job_parameters)
@@ -24,7 +24,7 @@ def sync(
 def sync_projects(
         neo4j_session: neo4j.Session,
         manager: Manager,
-        digitalocean_update_tag: str,
+        digitalocean_update_tag: int,
         common_job_parameters: dict,
 ) -> dict:
     logger.info("Syncing Projects")
@@ -73,28 +73,28 @@ def transform_projects(project_res: list, account_id: str) -> list:
 
 
 @timeit
-def load_projects(neo4j_session: neo4j.Session, data: list, digitalocean_update_tag: str) -> None:
+def load_projects(neo4j_session: neo4j.Session, data: list, digitalocean_update_tag: int) -> None:
     query = """
-        MERGE (a:DOAccount{id:{AccountId}})
+        MERGE (a:DOAccount{id:$AccountId})
         ON CREATE SET a.firstseen = timestamp()
-        SET a.lastupdated = {digitalocean_update_tag}
+        SET a.lastupdated = $digitalocean_update_tag
 
-        MERGE (p:DOProject{id:{ProjectId}})
+        MERGE (p:DOProject{id:$ProjectId})
         ON CREATE SET p.firstseen = timestamp()
-        SET p.account_id = {AccountId},
-        p.name = {Name},
-        p.owner_uuid = {OwnerUuid},
-        p.description = {Description},
-        p.environment = {Environment},
-        p.is_default = {IsDefault},
-        p.created_at = {CreatedAt},
-        p.updated_at = {UpdatedAt},
-        p.lastupdated = {digitalocean_update_tag}
+        SET p.account_id = $AccountId,
+        p.name = $Name,
+        p.owner_uuid = $OwnerUuid,
+        p.description = $Description,
+        p.environment = $Environment,
+        p.is_default = $IsDefault,
+        p.created_at = $CreatedAt,
+        p.updated_at = $UpdatedAt,
+        p.lastupdated = $digitalocean_update_tag
         WITH p, a
 
         MERGE (a)-[r:RESOURCE]->(p)
         ON CREATE SET r.firstseen = timestamp()
-        SET r.lastupdated = {digitalocean_update_tag}
+        SET r.lastupdated = $digitalocean_update_tag
         """
     for project in data:
         neo4j_session.run(
