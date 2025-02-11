@@ -15,27 +15,6 @@ from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
 
-# TODO get this programmatically
-# https://docs.aws.amazon.com/general/latest/gr/rande.html#elasticsearch-service-regions
-es_regions = [
-    'us-east-2',
-    'us-east-1',
-    'us-west-1',
-    'us-west-2',
-    'ap-northeast-1',
-    'ap-northeast-2',
-    'ap-south-1',
-    'ap-southeast-1',
-    'ca-central-1',
-    # 'cn-northwest-1',  -- intentionally ignored. need specific token
-    'eu-central-1',
-    'eu-west-1',
-    'eu-west-2',
-    'eu-west-3',
-    'sa-east-1',
-    # 'us-gov-west-1', -- intentionally ignored, need specific token
-]
-
 
 # TODO memoize this
 def _get_botocore_config() -> botocore.config.Config:
@@ -78,10 +57,10 @@ def _load_es_domains(
     :param domains: Domain list to ingest
     """
     ingest_records = """
-    UNWIND {Records} as record
+    UNWIND $Records as record
     MERGE (es:ESDomain{id: record.DomainId})
     ON CREATE SET es.firstseen = timestamp(), es.arn = record.ARN, es.domainid = record.DomainId
-    SET es.lastupdated = {aws_update_tag}, es.deleted = record.Deleted, es.created = record.created,
+    SET es.lastupdated = $aws_update_tag, es.deleted = record.Deleted, es.created = record.created,
     es.endpoint = record.Endpoint, es.elasticsearch_version = record.ElasticsearchVersion,
     es.elasticsearch_cluster_config_instancetype = record.ElasticsearchClusterConfig.InstanceType,
     es.elasticsearch_cluster_config_instancecount = record.ElasticsearchClusterConfig.InstanceCount,
@@ -98,10 +77,10 @@ def _load_es_domains(
     es.log_publishing_options_cloudwatch_log_group_arn = record.LogPublishingOptions.CloudWatchLogsLogGroupArn,
     es.log_publishing_options_enabled = record.LogPublishingOptions.Enabled
     WITH es
-    MATCH (account:AWSAccount{id: {AWS_ACCOUNT_ID}})
+    MATCH (account:AWSAccount{id: $AWS_ACCOUNT_ID})
     MERGE (account)-[r:RESOURCE]->(es)
     ON CREATE SET r.firstseen = timestamp()
-    SET r.lastupdated = {aws_update_tag}
+    SET r.lastupdated = $aws_update_tag
     """
 
     # TODO this is a hacky workaround -- neo4j doesn't accept datetime objects and this section of the object
@@ -156,23 +135,23 @@ def _link_es_domain_vpc(neo4j_session: neo4j.Session, domain_id: str, domain_dat
     :param domain_data: domain data
     """
     ingest_subnet = """
-    MATCH (es:ESDomain{id: {DomainId}})
+    MATCH (es:ESDomain{id: $DomainId})
     WITH es
-    UNWIND {SubnetList} as subnet_id
+    UNWIND $SubnetList as subnet_id
         MATCH (subnet_node:EC2Subnet{id: subnet_id})
         MERGE (es)-[r:PART_OF_SUBNET]->(subnet_node)
         ON CREATE SET r.firstseen = timestamp()
-        SET r.lastupdated = {aws_update_tag}
+        SET r.lastupdated = $aws_update_tag
     """
 
     ingest_sec_groups = """
-    MATCH (es:ESDomain{id: {DomainId}})
+    MATCH (es:ESDomain{id: $DomainId})
     WITH es
-    UNWIND {SecGroupList} as ecsecgroup_id
+    UNWIND $SecGroupList as ecsecgroup_id
         MATCH (group_node:EC2SecurityGroup{id: ecsecgroup_id})
         MERGE (es)-[r:MEMBER_OF_EC2_SECURITY_GROUP]->(group_node)
         ON CREATE SET r.firstseen = timestamp()
-        SET r.lastupdated = {aws_update_tag}
+        SET r.lastupdated = $aws_update_tag
     """
     # TODO we really shouldn't be sending full objects to Neo4j
     if domain_data.get("VPCOptions"):
@@ -207,7 +186,7 @@ def _process_access_policy(neo4j_session: neo4j.Session, domain_id: str, domain_
     :param domain_id: ES domain id
     :param domain_data: domain data
     """
-    tag_es = "MATCH (es:ESDomain{id: {DomainId}}) SET es.exposed_internet = {InternetExposed}"
+    tag_es = "MATCH (es:ESDomain{id: $DomainId}) SET es.exposed_internet = $InternetExposed"
 
     exposed_internet = False
 
@@ -233,10 +212,10 @@ def sync(
     neo4j_session: neo4j.Session, boto3_session: boto3.session.Session, regions: List[str], current_aws_account_id: str,
     update_tag: int, common_job_parameters: Dict,
 ) -> None:
-    for region in es_regions:
+    for region in regions:
         logger.info("Syncing Elasticsearch Service for region '%s' in account '%s'.", region, current_aws_account_id)
         client = boto3_session.client('es', region_name=region, config=_get_botocore_config())
         data = _get_es_domains(client)
         _load_es_domains(neo4j_session, data, current_aws_account_id, update_tag)
 
-    cleanup(neo4j_session, update_tag, current_aws_account_id)
+    cleanup(neo4j_session, update_tag, current_aws_account_id)  # type: ignore

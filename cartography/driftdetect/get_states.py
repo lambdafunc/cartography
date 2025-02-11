@@ -1,12 +1,18 @@
 import logging
 import os.path
 import time
+from typing import Any
+from typing import Dict
+from typing import List
 
-import neobolt.exceptions
+import neo4j.exceptions
 from marshmallow import ValidationError
 from neo4j import GraphDatabase
 
+from cartography.client.core.tx import read_list_of_dicts_tx
 from cartography.driftdetect.add_shortcut import add_shortcut
+from cartography.driftdetect.config import UpdateConfig
+from cartography.driftdetect.model import State
 from cartography.driftdetect.serializers import ShortcutSchema
 from cartography.driftdetect.serializers import StateSchema
 from cartography.driftdetect.storage import FileSystem
@@ -15,7 +21,7 @@ from cartography.driftdetect.util import valid_directory
 logger = logging.getLogger(__name__)
 
 
-def run_get_states(config):
+def run_get_states(config: UpdateConfig) -> None:
     """
     Handles neo4j errors and then updates detectors.
 
@@ -34,7 +40,7 @@ def run_get_states(config):
             config.neo4j_uri,
             auth=neo4j_auth,
         )
-    except neobolt.exceptions.ServiceUnavailable as e:
+    except neo4j.exceptions.ServiceUnavailable as e:
         logger.debug("Error occurred during Neo4j connect.", exc_info=True)
         logger.error(
             (
@@ -45,7 +51,7 @@ def run_get_states(config):
             e,
         )
         return
-    except neobolt.exceptions.AuthError as e:
+    except neo4j.exceptions.AuthError as e:
         logger.debug("Error occurred during Neo4j auth.", exc_info=True)
         if not neo4j_auth:
             logger.error(
@@ -86,11 +92,17 @@ def run_get_states(config):
                 logger.exception(msg)
             except FileNotFoundError as err:
                 logger.exception(err)
-            except neobolt.exceptions.CypherSyntaxError as err:
+            except neo4j.exceptions.CypherSyntaxError as err:
                 logger.exception(err)
 
 
-def get_query_state(session, query_directory, state_serializer, storage, filename):
+def get_query_state(
+        session: neo4j.Session,
+        query_directory: str,
+        state_serializer: StateSchema,
+        storage,
+        filename: str,
+) -> State:
     """
     Gets the most recent state of a query.
 
@@ -115,7 +127,7 @@ def get_query_state(session, query_directory, state_serializer, storage, filenam
     return state
 
 
-def get_state(session, state):
+def get_state(session: neo4j.Session, state: State) -> None:
     """
     Connects to a neo4j session, runs the validation query, then saves the results to a state.
 
@@ -126,12 +138,16 @@ def get_state(session, state):
     :return:
     """
 
-    new_results = session.run(state.validation_query)
+    new_results: List[Dict[str, Any]] = session.read_transaction(
+        read_list_of_dicts_tx,
+        state.validation_query,
+    )
     logger.debug(f"Updating results for {state.name}")
 
-    state.properties = new_results.keys()
-    results = []
+    # The keys will be the same across all items in the returned list
+    state.properties = list(new_results[0].keys()) if len(new_results) > 0 else []
 
+    results = []
     for record in new_results:
         values = []
         for field in record.values():

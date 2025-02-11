@@ -4,6 +4,7 @@ from typing import List
 
 import neo4j
 from googleapiclient.discovery import Resource
+from googleapiclient.errors import HttpError
 
 from cartography.util import run_cleanup_job
 from cartography.util import timeit
@@ -30,9 +31,21 @@ def get_all_groups(admin: Resource) -> List[Dict]:
     request = admin.groups().list(customer='my_customer', maxResults=20, orderBy='email')
     response_objects = []
     while request is not None:
-        resp = request.execute(num_retries=GOOGLE_API_NUM_RETRIES)
-        response_objects.append(resp)
-        request = admin.groups().list_next(request, resp)
+        try:
+            resp = request.execute(num_retries=GOOGLE_API_NUM_RETRIES)
+            response_objects.append(resp)
+            request = admin.groups().list_next(request, resp)
+        except HttpError as e:
+            if e.resp.status == 403 and "Request had insufficient authentication scopes" in str(e):
+                logger.error(
+                    "Missing required GSuite scopes. If using the gcloud CLI, ",
+                    "run: gcloud auth application-default login --scopes="
+                    '"https://www.googleapis.com/auth/admin.directory.user.readonly,'
+                    'https://www.googleapis.com/auth/admin.directory.group.readonly,'
+                    'https://www.googleapis.com/auth/admin.directory.group.member.readonly,'
+                    'https://www.googleapis.com/auth/cloud-platform"',
+                )
+            raise
     return response_objects
 
 
@@ -41,7 +54,7 @@ def transform_groups(response_objects: List[Dict]) -> List[Dict]:
     """  Strips list of API response objects to return list of group objects only
 
     :param response_objects:
-    :return: list of dictionary objects as defined in /docs/schema/gsuite.md
+    :return: list of dictionary objects as defined in /docs/root/modules/gsuite/schema.md
     """
     groups: List[Dict] = []
     for response_object in response_objects:
@@ -54,7 +67,7 @@ def transform_groups(response_objects: List[Dict]) -> List[Dict]:
 def transform_users(response_objects: List[Dict]) -> List[Dict]:
     """  Strips list of API response objects to return list of group objects only
     :param response_objects:
-    :return: list of dictionary objects as defined in /docs/schema/gsuite.md
+    :return: list of dictionary objects as defined in /docs/root/modules/gsuite/schema.md
     """
     users: List[Dict] = []
     for response_object in response_objects:
@@ -127,12 +140,12 @@ def get_all_users(admin: Resource) -> List[Dict]:
 @timeit
 def load_gsuite_groups(neo4j_session: neo4j.Session, groups: List[Dict], gsuite_update_tag: int) -> None:
     ingestion_qry = """
-        UNWIND {GroupData} as group
+        UNWIND $GroupData as group
         MERGE (g:GSuiteGroup{id: group.id})
         ON CREATE SET
-        g.firstseen = {UpdateTag}
-        ON MATCH SET
-        g.group_id = group.id,
+        g.firstseen = $UpdateTag,
+        g.group_id = group.id
+        SET
         g.admin_created = group.adminCreated,
         g.description = group.description,
         g.direct_members_count = group.directMembersCount,
@@ -140,7 +153,8 @@ def load_gsuite_groups(neo4j_session: neo4j.Session, groups: List[Dict], gsuite_
         g.etag = group.etag,
         g.kind = group.kind,
         g.name = group.name,
-        g.lastupdated = {UpdateTag}
+        g:GCPPrincipal,
+        g.lastupdated = $UpdateTag
     """
     logger.info(f'Ingesting {len(groups)} gsuite groups')
     neo4j_session.run(ingestion_qry, GroupData=groups, UpdateTag=gsuite_update_tag)
@@ -149,12 +163,12 @@ def load_gsuite_groups(neo4j_session: neo4j.Session, groups: List[Dict], gsuite_
 @timeit
 def load_gsuite_users(neo4j_session: neo4j.Session, users: List[Dict], gsuite_update_tag: int) -> None:
     ingestion_qry = """
-        UNWIND {UserData} as user
+        UNWIND $UserData as user
         MERGE (u:GSuiteUser{id: user.id})
         ON CREATE SET
-        u.firstseen = {UpdateTag}
-        ON MATCH SET
         u.user_id = user.id,
+        u.firstseen = $UpdateTag
+        SET
         u.agreed_to_terms = user.agreedToTerms,
         u.archived = user.archived,
         u.change_password_at_next_login = user.changePasswordAtNextLogin,
@@ -179,7 +193,8 @@ def load_gsuite_users(neo4j_session: neo4j.Session, users: List[Dict], gsuite_up
         u.suspended = user.suspended,
         u.thumbnail_photo_etag = user.thumbnailPhotoEtag,
         u.thumbnail_photo_url = user.thumbnailPhotoUrl,
-        u.lastupdated = {UpdateTag}
+        u:GCPPrincipal,
+        u.lastupdated = $UpdateTag
     """
     logger.info(f'Ingesting {len(users)} gsuite users')
     neo4j_session.run(ingestion_qry, UserData=users, UpdateTag=gsuite_update_tag)
@@ -188,13 +203,13 @@ def load_gsuite_users(neo4j_session: neo4j.Session, users: List[Dict], gsuite_up
 @timeit
 def load_gsuite_members(neo4j_session: neo4j.Session, group: Dict, members: List[Dict], gsuite_update_tag: int) -> None:
     ingestion_qry = """
-        UNWIND {MemberData} as member
-        MATCH (user:GSuiteUser {id: member.id}),(group:GSuiteGroup {id: {GroupID} })
+        UNWIND $MemberData as member
+        MATCH (user:GSuiteUser {id: member.id}),(group:GSuiteGroup {id: $GroupID })
         MERGE (user)-[r:MEMBER_GSUITE_GROUP]->(group)
         ON CREATE SET
-        r.firstseen = {UpdateTag}
-        ON MATCH SET
-        r.lastupdated = {UpdateTag}
+        r.firstseen = $UpdateTag
+        SET
+        r.lastupdated = $UpdateTag
     """
     neo4j_session.run(
         ingestion_qry,
@@ -203,13 +218,13 @@ def load_gsuite_members(neo4j_session: neo4j.Session, group: Dict, members: List
         UpdateTag=gsuite_update_tag,
     )
     membership_qry = """
-        UNWIND {MemberData} as member
-        MATCH(group_1: GSuiteGroup{id: member.id}), (group_2:GSuiteGroup {id: {GroupID}})
+        UNWIND $MemberData as member
+        MATCH(group_1: GSuiteGroup{id: member.id}), (group_2:GSuiteGroup {id: $GroupID})
         MERGE (group_1)-[r:MEMBER_GSUITE_GROUP]->(group_2)
         ON CREATE SET
-        r.firstseen = {UpdateTag}
-        ON MATCH SET
-        r.lastupdated = {UpdateTag}
+        r.firstseen = $UpdateTag
+        SET
+        r.lastupdated = $UpdateTag
     """
     neo4j_session.run(membership_qry, MemberData=members, GroupID=group.get("id"), UpdateTag=gsuite_update_tag)
 

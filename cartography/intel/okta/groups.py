@@ -12,6 +12,7 @@ from okta.framework.PagedResults import PagedResults
 from okta.models.usergroup import UserGroup
 
 from cartography.intel.okta.sync_state import OktaSyncState
+from cartography.intel.okta.utils import check_rate_limit
 from cartography.intel.okta.utils import create_api_client
 from cartography.intel.okta.utils import is_last_page
 from cartography.util import timeit
@@ -45,6 +46,8 @@ def _get_okta_groups(api_client: ApiClient) -> List[str]:
         paged_results = PagedResults(paged_response, UserGroup)
 
         group_list.extend(paged_results.result)
+
+        check_rate_limit(paged_response)
 
         if not is_last_page(paged_response):
             next_url = paged_response.links.get("next").get("url")
@@ -80,6 +83,8 @@ def get_okta_group_members(api_client: ApiClient, group_id: str) -> List[Dict]:
             raise
 
         member_list.extend(json.loads(paged_response.text))
+
+        check_rate_limit(paged_response)
 
         if not is_last_page(paged_response):
             next_url = paged_response.links.get("next").get("url")
@@ -173,9 +178,9 @@ def _load_okta_groups(
     :return: Nothing
     """
     ingest_statement = """
-    MATCH (org:OktaOrganization{id: {ORG_ID}})
+    MATCH (org:OktaOrganization{id: $ORG_ID})
     WITH org
-    UNWIND {GROUP_LIST} as group_data
+    UNWIND $GROUP_LIST as group_data
     MERGE (new_group:OktaGroup{id: group_data.id})
     ON CREATE SET new_group.firstseen = timestamp()
     SET new_group.name = group_data.name,
@@ -184,11 +189,11 @@ def _load_okta_groups(
     new_group.dn = group_data.dn,
     new_group.windows_domain_qualified_name = group_data.windows_domain_qualified_name,
     new_group.external_id = group_data.external_id,
-    new_group.lastupdated = {okta_update_tag}
+    new_group.lastupdated = $okta_update_tag
     WITH new_group, org
     MERGE (org)-[org_r:RESOURCE]->(new_group)
     ON CREATE SET org_r.firstseen = timestamp()
-    SET org_r.lastupdated = {okta_update_tag}
+    SET org_r.lastupdated = $okta_update_tag
     """
 
     neo4j_session.run(
@@ -213,9 +218,9 @@ def load_okta_group_members(
     :return: Nothing
     """
     ingest = """
-    MATCH (group:OktaGroup{id: {GROUP_ID}})
+    MATCH (group:OktaGroup{id: $GROUP_ID})
     WITH group
-    UNWIND {MEMBER_LIST} as member
+    UNWIND $MEMBER_LIST as member
         MERGE (user:OktaUser{id: member.id})
         ON CREATE SET user.firstseen = timestamp(),
             user.first_name = member.first_name,
@@ -230,10 +235,10 @@ def load_okta_group_members(
             user.okta_last_updated = member.okta_last_updated,
             user.password_changed = member.password_changed,
             user.transition_to_status = member.transition_to_status,
-            user.lastupdated = {okta_update_tag}
+            user.lastupdated = $okta_update_tag
         MERGE (user)-[r:MEMBER_OF_OKTA_GROUP]->(group)
         ON CREATE SET r.firstseen = timestamp()
-        SET r.lastupdated = {okta_update_tag}
+        SET r.lastupdated = $okta_update_tag
     """
     logging.info(f'Loading {len(member_list)} members of group {group_id}')
     neo4j_session.run(

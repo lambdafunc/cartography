@@ -8,6 +8,7 @@ import neo4j
 from okta.framework.ApiClient import ApiClient
 
 from cartography.intel.okta.sync_state import OktaSyncState
+from cartography.intel.okta.utils import check_rate_limit
 from cartography.intel.okta.utils import create_api_client
 from cartography.util import timeit
 
@@ -26,7 +27,7 @@ def _get_user_roles(api_client: ApiClient, user_id: str, okta_org_id: str) -> st
 
     # https://developer.okta.com/docs/reference/api/roles/#list-roles
     response = api_client.get_path(f'/{user_id}/roles')
-
+    check_rate_limit(response)
     return response.text
 
 
@@ -42,7 +43,7 @@ def _get_group_roles(api_client: ApiClient, group_id: str, okta_org_id: str) -> 
 
     # https://developer.okta.com/docs/reference/api/roles/#list-roles-assigned-to-group
     response = api_client.get_path(f'/{group_id}/roles')
-
+    check_rate_limit(response)
     return response.text
 
 
@@ -95,20 +96,20 @@ def transform_group_roles_data(data: str, okta_org_id: str) -> List[Dict]:
 @timeit
 def _load_user_role(neo4j_session: neo4j.Session, user_id: str, roles_data: List[Dict], okta_update_tag: int) -> None:
     ingest = """
-    MATCH (user:OktaUser{id: {USER_ID}})<-[:RESOURCE]-(org:OktaOrganization)
+    MATCH (user:OktaUser{id: $USER_ID})<-[:RESOURCE]-(org:OktaOrganization)
     WITH user,org
-    UNWIND {ROLES_DATA} as role_data
+    UNWIND $ROLES_DATA as role_data
     MERGE (role_node:OktaAdministrationRole{id: role_data.type})
     ON CREATE SET role_node.type = role_data.type, role_node.firstseen = timestamp()
-    SET role_node.label = role_data.label, role_node.lastupdated = {okta_update_tag}
+    SET role_node.label = role_data.label, role_node.lastupdated = $okta_update_tag
     WITH user, role_node, org
     MERGE (user)-[r:MEMBER_OF_OKTA_ROLE]->(role_node)
     ON CREATE SET r.firstseen = timestamp()
-    SET r.lastupdated = {okta_update_tag}
+    SET r.lastupdated = $okta_update_tag
     WITH role_node, org
     MERGE (org)-[r2:RESOURCE]->(role_node)
     ON CREATE SET r2.firstseen = timestamp()
-    SET r2.lastupdated = {okta_update_tag}
+    SET r2.lastupdated = $okta_update_tag
     """
 
     neo4j_session.run(
@@ -125,20 +126,20 @@ def _load_group_role(
     okta_update_tag: int,
 ) -> None:
     ingest = """
-    MATCH (group:OktaGroup{id: {GROUP_ID}})<-[:RESOURCE]-(org:OktaOrganization)
+    MATCH (group:OktaGroup{id: $GROUP_ID})<-[:RESOURCE]-(org:OktaOrganization)
     WITH group,org
-    UNWIND {ROLES_DATA} as role_data
+    UNWIND $ROLES_DATA as role_data
     MERGE (role_node:OktaAdministrationRole{id: role_data.type})
     ON CREATE SET role_node.type = role_data.type, role_node.firstseen = timestamp()
-    SET role_node.label = role_data.label, role_node.lastupdated = {okta_update_tag}
+    SET role_node.label = role_data.label, role_node.lastupdated = $okta_update_tag
     WITH group, role_node, org
     MERGE (group)-[r:MEMBER_OF_OKTA_ROLE]->(role_node)
     ON CREATE SET r.firstseen = timestamp()
-    SET r.lastupdated = {okta_update_tag}
+    SET r.lastupdated = $okta_update_tag
     WITH role_node, org
     MERGE (org)-[r2:RESOURCE]->(role_node)
     ON CREATE SET r2.firstseen = timestamp()
-    SET r2.lastupdated = {okta_update_tag}
+    SET r2.lastupdated = $okta_update_tag
     """
 
     neo4j_session.run(
